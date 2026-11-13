@@ -99,9 +99,11 @@ factorization machine term over every pair of pieces.
   the move that reached the node. A move
   the table has marked down sorts behind the quiet moves nothing is known
   about. The losing captures close the list. The quiet moves are put in
-  order only as far as the move loop reads them. Alpha beta prunes more the
-  sooner a good move is found, so ordering has an outsized effect on tree
-  size.
+  order only as far as the move loop reads them. The root reads no memory
+  and has a count of its own: behind the table's move it tries the rest by
+  the nodes the depth before spent under each, most first. Alpha beta
+  prunes more the sooner a good move is found, so ordering has an outsized
+  effect on tree size.
 - **limits.rs**: When to stop searching. A clock, a node budget, a soft
   line past which no new depth begins, set from how much of the last
   depth's nodes went to the chosen move, and a stop flag shared with the

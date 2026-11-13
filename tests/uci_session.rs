@@ -380,14 +380,14 @@ const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget, so the cut falls on the same node on every machine.
     // It has to land after an iteration reports its floor and before that
-    // iteration ends: depth seven answers d3e2 and finishes at 41,237
-    // nodes, and depth eight reports d3e2 as a floor from 58,527 nodes on
-    // and finishes at 90,907. The floor names the move depth seven
-    // answered, so the swap is to the same move. The budget moves with the
+    // iteration ends: depth five answers d3e2 and finishes at 13,386
+    // nodes, and depth six reports d3e2 as a floor at 15,322 nodes and
+    // finishes at 21,711. The floor names the move depth five answered,
+    // so the swap is to the same move. The budget moves with the
     // tree, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 70000");
+    s.say("go nodes 18000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = move_of(&answer);
     let info = s
@@ -425,17 +425,17 @@ fn line_opens_with(info: &str) -> &str {
     ignore = "pins a search made with the shipped factor table, which the test rank replaces"
 )]
 fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
-    // the sharp middlegame is worth 59 at depth four, answered with d3e2,
+    // the sharp middlegame is worth 69 at depth four, answered with d3e2,
     // and depth five fails low three times as the window widens: the
-    // ceilings name d3f1 at 9,167 nodes and d3c4 at 10,365, then d3e2 at
-    // 14,992, and the widest search finishes at 17,789. The budget lands
+    // ceilings name c3b1 at 7,678 nodes and d3h7 at 9,240, then d3b5 at
+    // 10,561, and the widest search finishes at 13,386. The budget lands
     // inside the third search, which has reached nothing above alpha by
     // then, so depth four's move still answers and the last ceiling said
     // names another. WAC.021 was this fixture until the window narrowed to
     // fifteen, under which its ceilings name the move that answers
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 12000");
+    s.say("go nodes 10000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = move_of(&answer);
 
@@ -487,9 +487,9 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
         score_of(completed),
         "the last line moved the score the answering depth said"
     );
-    assert_eq!(nodes_of(total), 12000, "the last line is not the budget");
+    assert_eq!(nodes_of(total), 10000, "the last line is not the budget");
     assert!(
-        nodes_of(ceiling) < 12000,
+        nodes_of(ceiling) < 10000,
         "the ceiling already covered the whole search: {}",
         ceiling
     );
@@ -502,7 +502,7 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
     ignore = "pins a search made with the shipped factor table, which the test rank replaces"
 )]
 fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with() {
-    // WAC.021 is worth 147 at depth seven and 162 at depth eight, so d2c3
+    // WAC.021 is worth 116 at depth seven and 144 at depth eight, so d2c3
     // reaches beta at depth eight, is reported as a floor and is searched
     // again with beta raised. Both lines name the same move, because the
     // wider search tries it first. A fixed depth, so nothing is aborted and
@@ -546,15 +546,15 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // what the engine plays when the wider search never finishes. WAC.021 is
     // answered with d2c3 at depth eight. At depth nine d2h6 reaches beta and
-    // is reported as a floor at 100,380 nodes, and again at 102,809 and
-    // 105,374 as the window widens, and the search finishes at 151,728. A budget
+    // is reported as a floor at 137,934 nodes, and again at 140,616 and
+    // 141,454 as the window widens, and the search finishes at 176,762. A budget
     // after d2h6's last floor and inside that is interrupted before anything
     // beats alpha, so the floor is what is left to answer with; with the
     // floor not held it answers d2c3, the move the search has just shown
     // worse
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", WAC_021));
-    s.say("go nodes 120000");
+    s.say("go nodes 145000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = move_of(&answer);
 

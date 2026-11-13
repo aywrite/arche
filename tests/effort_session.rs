@@ -11,13 +11,13 @@ mod report_command;
 /// four keeps hundreds of rows at this depth, and the switch is one whose
 /// rule acts at exactly these depths.
 ///
-/// Depth three, because the saving the test asks for shows there (2,784
-/// events off against 2,778 on). Since the pair term's refit at a ridge of
-/// 3e-7, the run with the rule off offers fewer events than the run with it
-/// on at every depth from four to eight. Every four rather than ten since
+/// Depth four, because the saving the test asks for shows there (8,075
+/// events off against 8,007 on). At depth three the two sides offer the
+/// same 2,775 since the root ordered its moves by nodes, and at depth five
+/// the run with the rule off offers fewer. Every four rather than ten since
 /// the passed pawn squares were scored: at ten no recorded key was reached by
-/// one side alone, and at four two are.
-const ARGUMENTS: [&str; 6] = ["effort", "3", "every", "4", "off", "quiet_futility"];
+/// one side alone, and at four some are.
+const ARGUMENTS: [&str; 6] = ["effort", "4", "every", "4", "off", "quiet_futility"];
 
 #[test]
 #[cfg_attr(
@@ -29,7 +29,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
     assert!(
         printed
             .header
-            .starts_with("effort depth 3 every 4 off quiet_futility positions "),
+            .starts_with("effort depth 4 every 4 off quiet_futility positions "),
         "header: {}",
         printed.header
     );
@@ -182,6 +182,6 @@ fn a_switch_the_engine_does_not_have_is_refused() {
         .strip_prefix("unrecognised effort off: quiet_futilty (a switch is one of ")
         .and_then(|rest| rest.strip_suffix(')'))
         .unwrap_or_else(|| panic!("stderr: {printed}"));
-    assert_eq!(named.split(", ").count(), 15, "stderr: {printed}");
+    assert_eq!(named.split(", ").count(), 16, "stderr: {printed}");
     assert!(output.stdout.is_empty());
 }

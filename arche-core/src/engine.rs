@@ -21,6 +21,7 @@ use crate::transposition::{
 use crate::value::{
     MateDistanceWindow, Taint, Value, below_the_mate_window, is_mate, mate_distance_window,
 };
+use smallvec::SmallVec;
 use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
@@ -582,6 +583,14 @@ pub struct SearchConfig {
     /// the history is the butterfly table alone. It does nothing with
     /// `move_memory` off.
     pub continuation_history: bool,
+    /// Whether the root tries its moves, after the first, in the order of
+    /// the nodes the depth before spent under each, most first. Off, they
+    /// follow the first in the order every other node without a memory
+    /// uses: captures by the swap, then quiets as generated.
+    ///
+    /// Only the deepening loop carries a depth's counts to the next, so a
+    /// search asked for a fixed depth orders as with the switch off.
+    pub root_order: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -687,7 +696,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 16] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -713,6 +722,7 @@ impl SearchConfig {
         ("continuation_history", |config| {
             config.continuation_history = false
         }),
+        ("root_order", |config| config.root_order = false),
     ];
 
     /// The default with one switch off, or none for a name the table does
@@ -750,6 +760,7 @@ impl SearchConfig {
             aspiration: false,
             singular_extensions: false,
             continuation_history: false,
+            root_order: false,
         }
     }
 
@@ -806,7 +817,31 @@ impl Default for SearchConfig {
             aspiration: true,
             singular_extensions: true,
             continuation_history: true,
+            root_order: true,
         }
+    }
+}
+
+/// Order the moves by the nodes counted under each, most first. A move with
+/// no count keeps its place, and the counted moves are ordered through the
+/// places the counted moves held. Moves counted alike keep their order.
+fn order_by_nodes(moves: &mut [Play], counts: &[(Play, u64)]) {
+    if counts.is_empty() {
+        return;
+    }
+    let mut counted: SmallVec<[(usize, Play, u64); MOVE_LIST_INLINE]> = moves
+        .iter()
+        .enumerate()
+        .filter_map(|(place, m)| {
+            let (_, nodes) = counts.iter().find(|(play, _)| play == m)?;
+            Some((place, *m, *nodes))
+        })
+        .collect();
+    let places: SmallVec<[usize; MOVE_LIST_INLINE]> =
+        counted.iter().map(|(place, _, _)| *place).collect();
+    counted.sort_by_key(|(_, _, nodes)| std::cmp::Reverse(*nodes));
+    for (place, (_, play, _)) in places.into_iter().zip(counted) {
+        moves[place] = play;
     }
 }
 
@@ -1314,6 +1349,12 @@ pub struct AlphaBeta {
     /// Cleared by the deepening loop at each depth and by a fixed depth
     /// search.
     root_nodes: Vec<(Play, u64)>,
+    /// The same count for the depth before the one under way, over every
+    /// search of that depth, which the root orders its moves by. Empty at
+    /// depth one and in a fixed depth search. The deepening loop moves
+    /// `root_nodes` here as it starts a depth, so every search of one depth
+    /// orders by the same counts.
+    root_nodes_before: Vec<(Play, u64)>,
     /// What the singular test did. Never reset, as `quiescence_nodes`.
     singular: SingularCounts,
     /// What each completed depth handed the soft line, for the tests.
@@ -1409,6 +1450,7 @@ impl AlphaBeta {
             effort_depths: effort::Depths::default(),
             forced: None,
             root_nodes: Vec::new(),
+            root_nodes_before: Vec::new(),
             singular: SingularCounts::default(),
             #[cfg(test)]
             soft_lines: Vec::new(),
@@ -3316,6 +3358,7 @@ impl AlphaBeta {
     /// before it.
     pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
         self.root_nodes.clear();
+        self.root_nodes_before.clear();
         self.search_root(depth, limits, None, Aspiration::open(None, depth))
     }
 
@@ -3364,6 +3407,13 @@ impl AlphaBeta {
         let mut moves = self.board.generate_moves();
         self.ordering
             .order(&self.board, &mut moves, pv_play, None, 0);
+        if self.config.root_order {
+            // the table's move keeps the head. With no table's move the
+            // whole list is ordered, which puts the move the depth before
+            // spent most on first
+            let head = usize::from(pv_play.is_some() && moves.first() == pv_play.as_ref());
+            order_by_nodes(&mut moves[head..], &self.root_nodes_before);
+        }
 
         // the root reduces nothing
         for m in &moves {
@@ -3565,6 +3615,8 @@ impl Engine for AlphaBeta {
         // one iteration to the next
         self.transpositions.new_search(self.board.eval.phase());
         self.ordering.forget();
+        // what is counted here is left from the last search
+        self.root_nodes.clear();
 
         for depth in 1..=max_depth {
             // the soft bound, asked once a depth rather than before each
@@ -3576,6 +3628,9 @@ impl Engine for AlphaBeta {
             }
             let mut window =
                 Aspiration::open(self.config.aspiration.then_some(exact).flatten(), depth);
+            // the depth just completed becomes the depth before, and the
+            // count starts again. At depth one this leaves both empty
+            std::mem::swap(&mut self.root_nodes, &mut self.root_nodes_before);
             self.root_nodes.clear();
             loop {
                 let (limits, stop) = search_options.for_iteration(best.is_some(), total_nodes);

@@ -10,6 +10,7 @@ mod search {
     use crate::engine::AlphaBeta;
     use crate::engine::Board;
     use crate::engine::Engine;
+    use crate::engine::order_by_nodes;
     use crate::engine::{
         ASPIRATION_MIN_DEPTH, ASPIRATION_WIDTH, Aspiration, Decision, Limits, MAX_PLY,
         NULL_MOVE_MIN_DEPTH, NULL_MOVE_REDUCTION, Play, RootBounds, SINGULAR_ENTRY_SLACK,
@@ -22,7 +23,7 @@ mod search {
     };
     use crate::limits::{Clock, RootNodes};
     use crate::misc::{Color, Piece};
-    use crate::transposition::Floor;
+    use crate::transposition::{Floor, TranspositionTable};
     use crate::value::CHECKMATE_THRESHOLD;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
@@ -1516,6 +1517,81 @@ mod search {
             e.root_nodes_for(play_named(&e.board, "a2a3"), None).chosen,
             0
         );
+    }
+
+    /// The root's order by nodes puts the counted moves most first through
+    /// the places they held. A move with no count stays where it was and
+    /// moves counted alike keep their order.
+    #[test]
+    fn the_order_by_nodes_is_most_first_and_leaves_an_uncounted_move_in_place() {
+        let board = Board::new();
+        let named = |name| play_named(&board, name);
+        let mut moves = ["a2a3", "b2b3", "c2c3", "d2d3", "e2e3"].map(named);
+        let counts = [
+            (named("e2e3"), 50),
+            (named("a2a3"), 10),
+            (named("d2d3"), 10),
+            (named("b2b3"), 70),
+            // a move the list does not hold
+            (named("h2h3"), 90),
+        ];
+        order_by_nodes(&mut moves, &counts);
+        assert_eq!(moves, ["b2b3", "e2e3", "c2c3", "a2a3", "d2d3"].map(named));
+        let before = moves;
+        order_by_nodes(&mut moves, &[]);
+        assert_eq!(moves, before);
+    }
+
+    /// The deepening loop hands each depth the counts of the depth before
+    /// and not its own: at the end of a search to depth six the counts held
+    /// for the order are depth five's, which is what the soft line was
+    /// handed then. A fixed depth search holds none.
+    #[test]
+    fn the_root_orders_by_the_depth_before() {
+        let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        e.iterative_deepening_search(SearchParameters::to_depth(6), |_, _, _, _| {});
+        let total = |counts: &[(Play, u64)]| counts.iter().map(|(_, nodes)| nodes).sum::<u64>();
+        assert_eq!(total(&e.root_nodes_before), e.soft_lines[4].total);
+        // the next search starts from neither
+        e.iterative_deepening_search(SearchParameters::to_depth(1), |_, _, _, _| {});
+        assert!(e.root_nodes_before.is_empty());
+        e.iterative_deepening_search(SearchParameters::to_depth(3), |_, _, _, _| {});
+        e.search_within(2, Limits::unlimited());
+        assert!(e.root_nodes_before.is_empty());
+    }
+
+    /// With the switch on a depth tries the table's move and then the rest
+    /// in the order of the depth before's counts. With it off the same
+    /// search tries them in another order.
+    #[test]
+    fn a_depth_tries_its_root_moves_by_the_nodes_of_the_depth_before() {
+        // the order a full window search of depth five tries the moves in,
+        // after a search to depth four, and whether it is the counts' order
+        // behind the table's move
+        let tried_in_order = |root_order| {
+            let mut e = AlphaBeta::with_table(
+                Board::from_fen(SHARP_MIDDLEGAME).unwrap(),
+                TranspositionTable::with_capacity_bytes(TABLE_BYTES).unwrap(),
+                SearchConfig {
+                    root_order,
+                    ..SearchConfig::default()
+                },
+            );
+            e.iterative_deepening_search(SearchParameters::to_depth(4), |_, _, _, _| {});
+            let counts = std::mem::take(&mut e.root_nodes);
+            e.root_nodes_before = counts.clone();
+            let head = e.transpositions.ordering_play(&e.board);
+            e.search_root(5, Limits::unlimited(), None, Aspiration::open(None, 5));
+            let tried: Vec<Play> = e.root_nodes.iter().map(|(play, _)| *play).collect();
+            assert_eq!(tried.len(), counts.len());
+            assert_eq!(tried.first().copied(), head);
+            let of = |play: &Play| counts.iter().find(|(p, _)| p == play).unwrap().1;
+            tried[1..]
+                .windows(2)
+                .all(|pair| of(&pair[0]) >= of(&pair[1]))
+        };
+        assert!(tried_in_order(true));
+        assert!(!tried_in_order(false));
     }
 
     /// Each completed depth hands the soft line its root nodes over every
