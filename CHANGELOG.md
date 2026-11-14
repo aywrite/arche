@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.11] - 2026-11-14
+
+### Development
+
+- *(ci)* Build the arm mac release for its own target and let the other builds finish
+
 ## [0.4.10] - 2026-11-14
 
 ### Features
