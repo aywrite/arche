@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.10-rc.2] - 2026-10-15
+## [0.4.10] - 2026-11-14
 
 ### Features
 
@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - *(uci)* Let the time horizon fall from a twentieth to a tenth by move 60 [bench 11088536] [elo +18 ±10 (sprt [0, 10] passed, 2000 games, 10+0.1, vs 8ade39b)]
 - *(uci)* Let a depth under way run past the share to a hard limit [bench 11088536] [elo +32 ±14 (sprt [0, 10] passed, 1000 games, 10+0.1, vs d82638a)]
 - *(eval)* Add passed pawn terms that read the stop and queening squares [bench 11916992]
+- *(search)* Add one ply continuation history to the quiet order from depth two [bench 9312660] [elo +8 ±6 (sprt [0, 5] passed, 5500 games, 10+0.1, vs 8e088cd)]
 
 ### Bug Fixes
 
@@ -63,6 +64,15 @@ All notable changes to this project will be documented in this file.
 - *(docs)* List the depth veto with its time spent, history reductions and the moves-left horizon as rejected
 - *(docs)* List the shallower re-search after a root fail high as rejected
 - *(release)* Acknowledge the six stale bench trailers that stopped 0.4.10-rc.1
+- *(deps)* Bump the actions group with 3 updates
+- *(docs)* List endgame scaling by material signature as rejected
+- *(deps)* Bump smallvec from 1.16.2 to 1.16.3 in the cargo group
+- *(deps)* Bump the actions group across 1 directory with 3 updates
+- *(deps)* Bump smallvec from 1.16.3 to 1.16.4 in the cargo group
+- *(deps)* Bump the actions group with 2 updates
+- *(deps)* Bump rustix from 1.1.4 to 1.1.6
+- *(docs)* List capture history as rejected
+- *(ci)* Build Texel 1.08 under cmake 4 by raising the policy floor to 3.5
 
 ## [0.4.9] - 2026-10-09
 
