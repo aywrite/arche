@@ -163,10 +163,14 @@ topple_build() {
 
 # Texel, built by its own cmake file from 1.08, the first release to have one.
 # Its defaults are a plain x86-64; popcount and the bit scans are asked for
-# as in the weiss block. Its tags carry no v, so a pin is 1.08.
+# as in the weiss block. Its tags carry no v, so a pin is 1.08. The gtest it
+# vendors for its tests asks for cmake 2.8.12, which cmake 4 refuses to
+# configure, so the policy floor is raised to the 3.5 cmake 4 will take. An
+# older cmake ignores the variable.
 REPOSITORY[texel]=https://github.com/peterosterlund2/texel.git
 texel_build() {
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DUSE_POPCNT=ON -DUSE_CTZ=ON -DUSE_PREFETCH=ON > /dev/null
     cmake --build build -j"$(nproc)" --target texel > /dev/null
     echo build/texel
