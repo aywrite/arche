@@ -58,6 +58,9 @@ jobs:
   upload-assets:
     needs: test
     strategy:
+      # one build that fails says nothing about the others, and cancelling
+      # them leaves a release with whichever assets happened to finish first
+      fail-fast: false
       matrix:
         os:
           - ubuntu-latest
@@ -78,7 +81,11 @@ jobs:
       # the baseline names its level rather than leaving this empty: an empty
       # variable has to survive as set to override .cargo/config.toml, and
       # windows is not reliable about that
-      RUSTFLAGS: ${{ matrix.cpu && format('-C target-cpu={0}', matrix.cpu) || '-C target-cpu=x86-64' }}
+      #
+      # The arm mac names its own target's default. Handed x86-64 it ignored
+      # the processor and lost neon with it, and rustc then crashed in the
+      # link time optimisation of v0.4.10 on both tries
+      RUSTFLAGS: ${{ matrix.os == 'macos-latest' && '-C target-cpu=apple-m1' || matrix.cpu && format('-C target-cpu={0}', matrix.cpu) || '-C target-cpu=x86-64' }}
       # v2 takes the plain name, being what almost every machine can run and
       # the faster build. The arm mac has one build and keeps the plain name
       # too, which is why the baseline suffix asks about the runner.
